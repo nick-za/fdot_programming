@@ -1,0 +1,278 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "9777151c-4587-4d8f-b81c-30840a2b3a13",
+   "metadata": {},
+   "source": [
+    "Notebook for determing programming status and amount overlap of pcs style data"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "f050e811-d19d-4816-80cf-d7696ff72ba2",
+   "metadata": {},
+   "source": [
+    "Importing the necessary libraries"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 16,
+   "id": "ad43978c-1880-47c0-a372-c5484bacb231",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "from pathlib import Path\n",
+    "from sqlalchemy import create_engine\n",
+    "from sqlalchemy.engine import URL\n",
+    "from pandasql import sqldf"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 44,
+   "id": "a69a8934-2d35-463b-9355-eda1a8990c4a",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "connection_Pavement=(\"Driver={SQL Server};\"\n",
+    "                      \"Server=DOTSSMSQLPROD;\"                \n",
+    "                      \"Trusted_Connection=yes;\")\n",
+    "pave_url=URL.create('mssql+pyodbc',query={'odbc_connect':connection_Pavement})\n",
+    "pave_eng=create_engine(pave_url)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 13,
+   "id": "7d482097-496e-4e64-8c33-6d0cb19b902c",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def find_uncovered_parts(row):\n",
+    "    rid=row[id1]\n",
+    "    begin_base=row[begin1]\n",
+    "    end_base=row[end1]\n",
+    "    matches=wp_data[wp_data[id2]==rid]\n",
+    "    uncovered_parts=[(begin_base,end_base)]\n",
+    "    for _,math_row in matches.iterrows():\n",
+    "        begin_second=match_row[begin2]\n",
+    "        end_second=match_row[end2]\n",
+    "        new_uncovered_parts=[]\n",
+    "        try:\n",
+    "            wpitmseg=match_row['WPITEM']+match_row['WPITMSEG']\n",
+    "        except:\n",
+    "            wpitmseg='None'\n",
+    "\n",
+    "        for part_begin,part_end in uncovered_parts:\n",
+    "             if part_end < begin_second or part_begin > end_second:\n",
+    "                    new_uncovered_parts.append((part_begin, part_end))\n",
+    "             else:\n",
+    "                    #split the part into uncovered sections\n",
+    "                    if part_begin < begin_second:\n",
+    "                        new_uncovered_parts.append((part_begin, begin_second))\n",
+    "                    if part_end > end_second:\n",
+    "                        new_uncovered_parts.append((end_second, part_end))\n",
+    "        if uncovered_parts!=new_uncovered_parts:\n",
+    "            wpitems.append(wpitmseg)\n",
+    "        uncovered_parts=new_uncovered_parts\n",
+    "    uncovered_len=sum(end-begin for begin,end in uncovered_parts)\n",
+    "    if len(wpitems)>0:\n",
+    "        wpitems=set(wpitems)\n",
+    "    return uncovered_parts,uncovered_len,wpitems\n",
+    "    \n",
+    "        "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 17,
+   "id": "f0727ac8-66e9-4bf4-bcfc-041660362768",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def assoc(bmp,emp,bsec,esec):\n",
+    "    if esec>=emp and bsec<=bmp:\n",
+    "        associated=1\n",
+    "    elif esec>=emp:\n",
+    "        associated=(emp-bsec)/(emp-bmp)\n",
+    "    elif bsec<=bmp:\n",
+    "        associated=(esec-bmp)/(emp-bmp)\n",
+    "    else:\n",
+    "        associated=(esec-bsec)/(emp-bmp)\n",
+    "    if associated>1:\n",
+    "        associated=1\n",
+    "    return associated"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 19,
+   "id": "10f14016-f062-4a9f-b047-99cf150423e7",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def prog_method(df1,df2):\n",
+    "    sql_new='''select p.*,w.* from df1 p \n",
+    "    left join df2 w \n",
+    "    on p.RDWYID=w.RDWYID and w.BEGSECPT<p.EMP and w.ENDSECPT> p.BMP\n",
+    "    order by RDWYID'''\n",
+    "    new_merge=sqldf(sql_code_new,locals())\n",
+    "    new_merge=new_merge.loc[:,~new_merge.columns.duplicated()]\n",
+    "    new_merge['ASSOC']=new_merge.apply(lambda x: assoc(x['BMP'],x['EMP'],x['BEGSECPT'],x['ENDSECPT']),axis=1)\n",
+    "    new_merge=new_merge.loc[new_merge['ASSOC']>0.33]\n",
+    "    new_merge=new_merge.sort_values(by=['FID','ASSOC'],ascending=[True,False])\n",
+    "    new_merge=new_merge.drop_duplicates(subset=['RDWYID','DIR','BMP','EMP'],keep=\"first\")\n",
+    "    return new_merge\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 22,
+   "id": "77c2311f-1d24-479d-a5ad-9be34063b8e4",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def find_programming(pcs_data,wp_data,outpath):\n",
+    "    pcs_data.columns=pcs_data.columns.map.str.upper()\n",
+    "    wp_data.columns=wp_data.columns.map.str.upper()\n",
+    "    pcs_data[['uncovered','length_uncovered','list']]=pcs_data.apply(find_uncovered_parts,axis=1,result_type='expand')\n",
+    "    pcs_data['percent_uncovered']=pcs_data['uncovered_len']/(pcs_data[end1]-pcs_data[begin1])\n",
+    "    pcs_data.to_excel(Path(outpath,'progamming_added.xlsx'))\n",
+    "    return pcs_data\n",
+    "        \n",
+    "        "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 43,
+   "id": "e1ab53a6-0062-45dd-ab06-358f5ae0fa8b",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def sql_read(type):\n",
+    "    if type=='pcs':\n",
+    "        data=pd.read_sql('Select * from pavement.dbo.master_pcs_net where surveyyear='+str(yr),pav_eng)\n",
+    "    elif type=='wp':\n",
+    "        data=pd.read_sql('Select * pavemgmt.dbo.wp_fut',pav_eng)\n",
+    "    return data"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "152eaa6c-f4dc-42ef-b3e1-82f68446a121",
+   "metadata": {},
+   "source": [
+    "Identify the names for ID(RDWYID), Begin(BMP), and End(EMP) for pcs data and wp or secondary data."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 38,
+   "id": "307f1354-96b4-4882-a395-28892a4e691b",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "id1='rdwyid'\n",
+    "begin1='BMP'\n",
+    "end1='emP'\n",
+    "id2='RDWYID'\n",
+    "begin2='BEGSECPT'\n",
+    "end2='ENDSECPT'"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 40,
+   "id": "ae34ed86-220a-44f0-acc9-5a5d1fd2a95e",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "id1=str.upper(id1)\n",
+    "begin1=str.upper(begin1)\n",
+    "end1=str.upper(end1)\n",
+    "id2=str.upper(id2)\n",
+    "begin2=str.upper(begin2)\n",
+    "end2=str.upper(end2)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "4e13d270-c95d-4e73-a937-5e300bf59709",
+   "metadata": {},
+   "source": [
+    "If pcs_data is in an excel file enter the path below, otherwise it will default to the last completed surveyyear in sql"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 24,
+   "id": "c9732004-abaa-40a8-a4f6-5f2a92b79eb3",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "pcs_path=r'Q:\\Road Survey Data\\PCS Network\\2024-2025\\Distresses\\Patching\\PtSections.xlsx' \n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 42,
+   "id": "6beefc68-da71-422b-b519-ca8960ef7601",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "NameError",
+     "evalue": "name 'sql_read' is not defined",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[1;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[1;31mNameError\u001b[0m                                 Traceback (most recent call last)",
+      "Cell \u001b[1;32mIn[42], line 5\u001b[0m\n\u001b[0;32m      3\u001b[0m \u001b[38;5;28;01mexcept\u001b[39;00m:\n\u001b[0;32m      4\u001b[0m     pcs_data\u001b[38;5;241m=\u001b[39msql_read(\u001b[38;5;124m'\u001b[39m\u001b[38;5;124mpcs\u001b[39m\u001b[38;5;124m'\u001b[39m)\n\u001b[1;32m----> 5\u001b[0m wp_data\u001b[38;5;241m=\u001b[39m\u001b[43msql_read\u001b[49m(\u001b[38;5;124m'\u001b[39m\u001b[38;5;124mwp\u001b[39m\u001b[38;5;124m'\u001b[39m)\n",
+      "\u001b[1;31mNameError\u001b[0m: name 'sql_read' is not defined"
+     ]
+    }
+   ],
+   "source": [
+    "try:\n",
+    "    pcs_data=pd.read_excel(pcs_path)\n",
+    "except:\n",
+    "    pcs_data=sql_read('pcs')\n",
+    "wp_data=sql_read('wp')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "2653317c-37a3-4abc-86fe-88d6b2174608",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3 (ipykernel)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.9.18"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
